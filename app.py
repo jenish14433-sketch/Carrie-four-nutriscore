@@ -1,177 +1,204 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 from io import BytesIO
 
-st.set_page_config(page_title="Carrefour Nutri-Score Analysis", page_icon="🛒", layout="wide")
+st.set_page_config(page_title="NutriLens | Retail Nutrition Intelligence", page_icon="🥗", layout="wide")
 
-st.title("🛒 Carrefour Nutri-Score Analysis")
-st.caption("Compare Carrefour own-label products with other listed brands in the French Open Food Facts dataset.")
+# ---------- Demo data (synthetic; clearly labelled) ----------
+@st.cache_data
+def make_demo_data():
+    rng = np.random.default_rng(42)
+    n = 600
+    groups = np.array(["Carrefour own-label"] * 300 + ["Other listed brands"] * 300)
+    rng.shuffle(groups)
+    rows = []
+    for i, group in enumerate(groups):
+        # Deliberately varied illustrative distributions; not measured Carrefour results.
+        if group == "Carrefour own-label":
+            probs = [0.19, 0.25, 0.25, 0.19, 0.12]
+            sugar_mu, salt_mu, sat_mu = 11.8, 0.82, 3.4
+        else:
+            probs = [0.16, 0.22, 0.26, 0.21, 0.15]
+            sugar_mu, salt_mu, sat_mu = 13.0, 0.94, 3.9
+        grade = rng.choice(list("ABCDE"), p=probs)
+        rows.append({
+            "code": f"DEMO{i+1:04d}",
+            "product_name": f"Illustrative product {i+1}",
+            "brands": "Carrefour (illustrative)" if group == "Carrefour own-label" else "Other brand (illustrative)",
+            "brand_group": group,
+            "nutriscore_grade": grade,
+            "sugars_100g": round(max(0, rng.normal(sugar_mu, 7)), 1),
+            "salt_100g": round(max(0, rng.normal(salt_mu, 0.55)), 2),
+            "saturated_fat_100g": round(max(0, rng.normal(sat_mu, 2.8)), 1),
+        })
+    return pd.DataFrame(rows)
 
-st.info(
-    "Upload the cleaned CSV exported by the Carrefour analysis notebook. "
-    "This app analyses the uploaded data; it does not invent or estimate missing results."
-)
+st.title("🥗 NutriLens")
+st.subheader("Retail Nutrition Intelligence")
+st.write("Turn food-product data into clear comparisons that support better product and portfolio decisions.")
 
-uploaded = st.file_uploader("Upload your cleaned Carrefour CSV", type=["csv"])
+with st.sidebar:
+    st.header("Data source")
+    mode = st.radio("Choose data", ["Interactive demo", "Upload real CSV"], index=0)
+    st.caption("The demo uses synthetic illustrative data. It is not actual Carrefour or competitor product data.")
+    uploaded = None
+    if mode == "Upload real CSV":
+        uploaded = st.file_uploader("Upload cleaned CSV", type=["csv"])
+    st.divider()
+    st.caption("Prototype • Built with Streamlit")
 
-if uploaded is None:
-    st.markdown("### How to use")
-    st.markdown(
-        "1. Run `Carrefour_Complete_Analysis.ipynb` in Google Colab.  \n"
-        "2. Download the cleaned CSV produced by the notebook.  \n"
-        "3. Upload that CSV here to display the dashboard."
-    )
-    st.stop()
-
-try:
-    df = pd.read_csv(uploaded)
-except Exception as e:
-    st.error(f"I couldn't read this CSV: {e}")
-    st.stop()
-
-df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
-
-def find_col(options):
-    for c in options:
-        if c in df.columns:
-            return c
-    return None
-
-grade_col = find_col(["nutriscore_grade", "nutrition_grade_fr", "nutri_score", "grade"])
-brand_group_col = find_col(["brand_group", "brand_type", "comparison_group", "group"])
-brand_col = find_col(["brands", "brand", "brands_tags"])
-sugar_col = find_col(["sugars_100g", "sugars"])
-salt_col = find_col(["salt_100g", "salt"])
-satfat_col = find_col(["saturated_fat_100g", "saturated_fat"])
-
-if grade_col is None:
-    st.error("The CSV needs a Nutri-Score column (for example: `nutriscore_grade`). Please upload the cleaned CSV from the notebook.")
-    st.write("Columns found:", list(df.columns))
-    st.stop()
-
-df[grade_col] = df[grade_col].astype(str).str.strip().str.upper()
-df = df[df[grade_col].isin(list("ABCDE"))].copy()
-
-if brand_group_col is None:
-    if brand_col is None:
-        st.error("I couldn't find a brand or comparison-group column. Please use the cleaned CSV exported by the notebook.")
-        st.write("Columns found:", list(df.columns))
+if mode == "Interactive demo":
+    df = make_demo_data()
+    st.warning("DEMO MODE: All figures below are synthetic and illustrative. Do not present them as measured market findings.")
+else:
+    if uploaded is None:
+        st.info("Upload your cleaned Open Food Facts CSV to generate a real-data analysis.")
+        st.markdown("**Required columns:** `brand_group`, `nutriscore_grade`. Optional: `sugars_100g`, `salt_100g`, `saturated_fat_100g`, `product_name`, `brands`.")
         st.stop()
-    # Conservative fallback: classify only explicit Carrefour brand mentions.
-    brand_text = df[brand_col].fillna("").astype(str).str.lower()
-    df["comparison_group"] = brand_text.apply(
-        lambda x: "Carrefour own-label" if "carrefour" in x else "Other listed brands"
-    )
-    brand_group_col = "comparison_group"
+    try:
+        df = pd.read_csv(uploaded)
+    except Exception as e:
+        st.error(f"Could not read the CSV: {e}")
+        st.stop()
 
-df[brand_group_col] = df[brand_group_col].astype(str).str.strip()
-df = df[df[brand_group_col].isin(["Carrefour own-label", "Other listed brands"])].copy()
+# Normalise columns
+df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
+aliases = {
+    "nutrition_grade_fr": "nutriscore_grade",
+    "nutri_score": "nutriscore_grade",
+    "grade": "nutriscore_grade",
+    "comparison_group": "brand_group",
+    "group": "brand_group",
+    "sugars": "sugars_100g",
+    "salt": "salt_100g",
+    "saturated_fat": "saturated_fat_100g",
+}
+for old, new in aliases.items():
+    if old in df.columns and new not in df.columns:
+        df = df.rename(columns={old: new})
 
-if df.empty:
-    st.warning("No valid records remain after filtering. Check that the uploaded CSV is the cleaned export from the notebook.")
+needed = ["brand_group", "nutriscore_grade"]
+missing = [c for c in needed if c not in df.columns]
+if missing:
+    st.error("Missing required columns: " + ", ".join(missing))
     st.stop()
 
-st.success(f"Loaded {len(df):,} valid product records.")
-
+df["brand_group"] = df["brand_group"].astype(str).str.strip()
+df["nutriscore_grade"] = df["nutriscore_grade"].astype(str).str.strip().str.upper()
+df = df[df["nutriscore_grade"].isin(list("ABCDE"))].copy()
 groups = ["Carrefour own-label", "Other listed brands"]
-available_groups = [g for g in groups if g in set(df[brand_group_col])]
-if len(available_groups) < 2:
-    st.warning("The uploaded file contains only one comparison group. Upload the complete cleaned dataset to compare both groups.")
+df = df[df["brand_group"].isin(groups)].copy()
+if df.empty:
+    st.error("No valid records found. Check the group labels and Nutri-Score values.")
+    st.stop()
 
-c1, c2, c3 = st.columns(3)
-c1.metric("Products analysed", f"{len(df):,}")
-c2.metric("Carrefour own-label", f"{(df[brand_group_col] == groups[0]).sum():,}")
-c3.metric("Other listed brands", f"{(df[brand_group_col] == groups[1]).sum():,}")
+for c in ["sugars_100g", "salt_100g", "saturated_fat_100g"]:
+    if c in df.columns:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
 
-st.subheader("1. Nutri-Score distribution")
-counts = pd.crosstab(df[brand_group_col], df[grade_col], normalize="index") * 100
-counts = counts.reindex(index=available_groups, columns=list("ABCDE"), fill_value=0)
-fig, ax = plt.subplots(figsize=(9, 4.5))
-counts.plot(kind="bar", stacked=True, ax=ax)
-ax.set_ylabel("Share of products (%)")
-ax.set_xlabel("")
-ax.set_title("Nutri-Score grades by brand group")
-ax.legend(title="Nutri-Score", bbox_to_anchor=(1.02, 1), loc="upper left")
-plt.xticks(rotation=0)
-st.pyplot(fig, use_container_width=True)
-plt.close(fig)
+# Header and KPIs
+left, right = st.columns([3,1])
+with left:
+    st.markdown("### Product portfolio comparison")
+    st.caption("Compare nutritional profiles across own-label and other listed brands.")
+with right:
+    st.metric("Products analysed", f"{len(df):,}")
 
-st.subheader("2. Share of products with A/B and E scores")
-share = df.assign(
-    ab=df[grade_col].isin(["A", "B"]),
-    e=df[grade_col].eq("E")
-).groupby(brand_group_col)[["ab", "e"]].mean() * 100
-share = share.reindex(available_groups)
-fig, ax = plt.subplots(figsize=(8, 4))
-share.rename(columns={"ab": "Nutri-Score A/B", "e": "Nutri-Score E"}).plot(kind="bar", ax=ax)
-ax.set_ylabel("Share of products (%)")
-ax.set_xlabel("")
-ax.set_title("A/B and E shares by brand group")
-plt.xticks(rotation=0)
-st.pyplot(fig, use_container_width=True)
-plt.close(fig)
+k1, k2, k3 = st.columns(3)
+k1.metric("Carrefour own-label", f"{(df.brand_group == groups[0]).sum():,}")
+k2.metric("Other listed brands", f"{(df.brand_group == groups[1]).sum():,}")
+k3.metric("Valid Nutri-Scores", f"{len(df):,}")
 
-st.subheader("3. Nutrient comparison")
-nutrient_options = {
-    "Sugars (g per 100 g)": sugar_col,
-    "Salt (g per 100 g)": salt_col,
-    "Saturated fat (g per 100 g)": satfat_col,
-}
-available_nutrients = {k:v for k,v in nutrient_options.items() if v is not None}
-if available_nutrients:
-    selected_label = st.selectbox("Choose a nutrient", list(available_nutrients))
-    selected_col = available_nutrients[selected_label]
-    df[selected_col] = pd.to_numeric(df[selected_col], errors="coerce")
-    plot_df = df[[brand_group_col, selected_col]].dropna()
-    fig, ax = plt.subplots(figsize=(8, 4))
-    data = [plot_df.loc[plot_df[brand_group_col] == g, selected_col].values for g in available_groups]
-    ax.boxplot(data, labels=available_groups)
-    ax.set_ylabel(selected_label)
-    ax.set_title(f"{selected_label}: distribution by brand group")
+st.divider()
+tab1, tab2, tab3, tab4 = st.tabs(["Overview", "Nutrition deep dive", "Business insights", "About & limitations"])
+
+with tab1:
+    st.markdown("#### Nutri-Score distribution")
+    counts = pd.crosstab(df["brand_group"], df["nutriscore_grade"], normalize="index") * 100
+    counts = counts.reindex(index=groups, columns=list("ABCDE"), fill_value=0)
+    fig, ax = plt.subplots(figsize=(9,4))
+    counts.plot(kind="bar", stacked=True, ax=ax)
+    ax.set_ylabel("Share of products (%)")
+    ax.set_xlabel("")
+    ax.set_title("Nutri-Score mix by brand group")
+    ax.legend(title="Grade", bbox_to_anchor=(1.02,1), loc="upper left")
     plt.xticks(rotation=0)
     st.pyplot(fig, use_container_width=True)
     plt.close(fig)
-else:
-    st.warning("No sugar, salt, or saturated-fat column was found. The nutrient chart is unavailable.")
 
-st.subheader("Key descriptive results")
-rows = []
-for g in available_groups:
-    subset = df[df[brand_group_col] == g]
-    row = {"Group": g, "Products": len(subset),
-           "A/B share (%)": round(subset[grade_col].isin(["A","B"]).mean()*100, 1),
-           "E share (%)": round(subset[grade_col].eq("E").mean()*100, 1)}
-    for label, col in [("Median sugars (g/100g)", sugar_col),
-                       ("Median salt (g/100g)", salt_col),
-                       ("Median saturated fat (g/100g)", satfat_col)]:
-        if col:
-            vals = pd.to_numeric(subset[col], errors="coerce")
-            row[label] = round(vals.median(), 2) if vals.notna().any() else None
-    rows.append(row)
-summary = pd.DataFrame(rows)
-st.dataframe(summary, use_container_width=True, hide_index=True)
+    share = df.assign(
+        ab=df.nutriscore_grade.isin(["A","B"]),
+        e=df.nutriscore_grade.eq("E")
+    ).groupby("brand_group")[["ab","e"]].mean()*100
+    share = share.reindex(groups)
+    c1,c2 = st.columns(2)
+    with c1:
+        st.markdown("#### A/B share")
+        st.bar_chart(share[["ab"]].rename(columns={"ab":"A/B products (%)"}))
+    with c2:
+        st.markdown("#### E share")
+        st.bar_chart(share[["e"]].rename(columns={"e":"E products (%)"}))
+    st.caption("Shares are calculated from the currently selected dataset.")
 
-st.subheader("Interpretation prompts")
-st.markdown(
-    "- **Finding:** Describe the largest visible difference between the two groups.  \n"
-    "- **Context:** Mention the number of products and the period/source represented by the dataset.  \n"
-    "- **So what?:** Explain what the difference could mean for product positioning or consumer choice, without claiming causation."
-)
+with tab2:
+    st.markdown("#### Nutrient comparison")
+    nutrient_labels = {
+        "Sugar (g per 100 g)": "sugars_100g",
+        "Salt (g per 100 g)": "salt_100g",
+        "Saturated fat (g per 100 g)": "saturated_fat_100g"
+    }
+    available = {k:v for k,v in nutrient_labels.items() if v in df.columns and df[v].notna().any()}
+    if available:
+        choice = st.selectbox("Select nutrient", list(available))
+        col = available[choice]
+        fig, ax = plt.subplots(figsize=(8,4))
+        vals = [df.loc[df.brand_group==g, col].dropna().values for g in groups]
+        ax.boxplot(vals, labels=groups)
+        ax.set_ylabel(choice)
+        ax.set_title(f"{choice} distribution")
+        plt.xticks(rotation=0)
+        st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
+        st.dataframe(df.groupby("brand_group")[col].agg(["count","median","mean"]).round(2), use_container_width=True)
+    else:
+        st.info("Nutrient columns are not available in this uploaded dataset.")
 
-st.subheader("Exactly three caveats to report")
-st.markdown(
-    "1. Open Food Facts is a crowdsourced database, so product coverage and data quality may vary.  \n"
-    "2. Nutri-Score and nutrient information may be missing, outdated, or entered inconsistently.  \n"
-    "3. This is a descriptive comparison of listed products, not a representative sample of every product sold in France; it does not prove that the brand caused the observed differences."
-)
+with tab3:
+    st.markdown("#### Decision-support view")
+    st.write("Use the comparison to identify product categories or formulations that may deserve a closer review.")
+    ab = (df.assign(ab=df.nutriscore_grade.isin(["A","B"]))
+          .groupby("brand_group").ab.mean()*100)
+    e = (df.assign(e=df.nutriscore_grade.eq("E"))
+         .groupby("brand_group").e.mean()*100)
+    if all(g in ab.index for g in groups):
+        delta_ab = ab[groups[0]] - ab[groups[1]]
+        delta_e = e[groups[0]] - e[groups[1]]
+        st.markdown("**Questions a category manager could ask:**")
+        st.markdown(
+            "- Which categories show the largest gap in A/B share?\n"
+            "- Which products have high sugar, salt or saturated-fat values?\n"
+            "- Where could recipe reformulation or clearer product positioning be explored?"
+        )
+        st.info(f"In this dataset, the A/B-share difference is {delta_ab:+.1f} percentage points and the E-share difference is {delta_e:+.1f} percentage points. Treat these as descriptive comparisons, not proof of causation.")
+    else:
+        st.info("Both comparison groups are needed for the business comparison.")
 
-st.subheader("AI-use log")
-st.markdown(
-    "AI assistance was used to help structure and debug Python code, suggest visualisations, and improve explanations. "
-    "The dataset source, filtering decisions, outputs, and interpretation should be checked by the student."
-)
+    st.markdown("#### Example use case")
+    st.write("A retailer's category manager reviews the dashboard before a product-range meeting. The dashboard highlights where own-label and competing products differ, helping the team prioritise which categories to investigate. Any recipe or portfolio decision would require further product-level validation.")
 
-csv_bytes = summary.to_csv(index=False).encode("utf-8")
-st.download_button("Download summary table (CSV)", csv_bytes, "carrefour_summary.csv", "text/csv")
-st.caption("Source: user-uploaded cleaned data exported from the Open Food Facts analysis notebook.")
+with tab4:
+    st.markdown("#### Data quality and limitations")
+    st.markdown(
+        "1. Open Food Facts is crowdsourced; coverage and accuracy can vary.\n"
+        "2. Nutrition values or Nutri-Score grades may be missing, outdated or inconsistent.\n"
+        "3. A dataset sample may not represent every product sold in France; descriptive differences do not establish causation."
+    )
+    st.markdown("#### Demo data disclosure")
+    st.write("Interactive demo mode generates 600 synthetic illustrative records so the dashboard can be demonstrated without an external API. These records are not real products and must never be reported as factual Carrefour market results.")
+    st.markdown("#### Technology")
+    st.write("Python • Pandas • Matplotlib • Streamlit")
+
+st.divider()
+st.caption("NutriLens is a prototype decision-support dashboard, not a nutritional certification tool.")
