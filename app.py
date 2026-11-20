@@ -155,7 +155,7 @@ with tab2:
         col = available[choice]
         fig, ax = plt.subplots(figsize=(8,4))
         vals = [df.loc[df.brand_group==g, col].dropna().values for g in groups]
-        ax.boxplot(vals, labels=groups)
+        ax.boxplot(vals, tick_labels=groups)
         ax.set_ylabel(choice)
         ax.set_title(f"{choice} distribution")
         plt.xticks(rotation=0)
