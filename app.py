@@ -42,14 +42,14 @@ def fetch_off_products(limit: int, country_tag: str, keywords: str):
     """Fetch paginated product records from OFF v2 search. No fabricated fallback data."""
     url = "https://world.openfoodfacts.org/api/v2/search"
     headers = {"User-Agent": "CarrefourNutriScoreStudentResearch/1.0 (Streamlit app)"}
-    fields = "code,product_name,brands,nutriscore_grade,categories,countries_tags,last_modified_t"
+    fields = "code,product_name,brands,nutriscore_grade,nutrition_grades,categories,countries_tags,last_modified_t"
     page_size = 50
     pages = (limit + page_size - 1) // page_size
     all_rows = []
     for page in range(1, pages + 1):
         params = {
             "countries_tags_en": country_tag,
-            "nutrition_grades_tags": "a,b,c,d,e",
+            "nutrition_grades_tags": "a|b|c|d|e",  # pipe means OR; commas mean AND in Open Food Facts
             "fields": fields,
             "page_size": page_size,
             "page": page,
@@ -87,9 +87,11 @@ def clean_products(products, keywords):
     if not products:
         return pd.DataFrame()
     df = pd.DataFrame(products)
-    for c in ["code", "product_name", "brands", "nutriscore_grade", "categories"]:
+    for c in ["code", "product_name", "brands", "nutriscore_grade", "nutrition_grades", "categories"]:
         if c not in df.columns:
             df[c] = ""
+    # OFF records can expose the grade under either field name depending on the record/API schema.
+    df["nutriscore_grade"] = df["nutriscore_grade"].replace("", pd.NA).fillna(df["nutrition_grades"])
     df = df[["code", "product_name", "brands", "nutriscore_grade", "categories"]].copy()
     df["brands"] = df["brands"].fillna("").astype(str).str.strip()
     df["product_name"] = df["product_name"].fillna("").astype(str).str.strip()
